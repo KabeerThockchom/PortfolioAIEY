@@ -1,0 +1,90 @@
+@layer theme, base, mui, components, utilities;
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #1a1a24;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #1a1a24;
+    --foreground: #ededed;
+  }
+}
+
+@font-face {
+  font-family: "EYInterstate";
+  src: url("../app/fonts/EYInterstate-Regular.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "EYInterstate";
+  src: url("../app/fonts/EYInterstate-Bold.ttf") format("truetype");
+  font-weight: bold;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "EYInterstate";
+  src: url("../app/fonts/EYInterstate-BoldItalic.ttf") format("truetype");
+  font-weight: bold;
+  font-style: italic;
+}
+
+@font-face {
+  font-family: "EYInterstate";
+  src: url("../app/fonts/EYInterstate-Italic.ttf") format("truetype");
+  font-weight: normal;
+  font-style: italic;
+}
+
+@font-face {
+  font-family: "EYInterstate";
+  src: url("../app/fonts/EYInterstate-Light.ttf") format("truetype");
+  font-weight: lighter;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "EYInterstate";
+  src: url("../app/fonts/EYInterstate-LightBold.ttf") format("truetype");
+  font-weight: lighter;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "EYInterstate";
+  src: url("../app/fonts/EYInterstate-LightBoldItalic.ttf") format("truetype");
+  font-weight: bold;
+  font-style: italic;
+}
+
+@font-face {
+  font-family: "EYInterstate";
+  src: url("../app/fonts/EYInterstate-LightItalic.ttf") format("truetype");
+  font-weight: lighter;
+  font-style: italic;
+}
+
+@font-face {
+  font-family: "EYInterstate";
+  src: url("../app/fonts/EYInterstate-Italic.ttf") format("truetype");
+  font-weight: normal;
+  font-style: italic;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: "EYInterstate", Arial, Helvetica, sans-serif;
+}
