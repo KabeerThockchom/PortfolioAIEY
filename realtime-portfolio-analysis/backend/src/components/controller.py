@@ -345,11 +345,12 @@ def get_cash_balance(user_id: int, db: Session = Depends(get_db)):
             UserPortfolio.asset_id == cash_asset_id
         ).scalar() or 0
 
-        #get the total value of buy orders from the order book for status under review or placed
+        # Get the total value of buy orders that are under review (pending confirmation)
+        # Note: "Placed" orders are already executed and reflected in the cash_balance
         total_buy_value = db.query(func.sum(OrderBook.amount)).filter(
             OrderBook.user_id == user_id,
             OrderBook.buy_sell == 'Buy',
-            OrderBook.order_status.in_(['Under Review', 'Placed'])
+            OrderBook.order_status == 'Under Review'
         ).scalar() or 0  # Default to 0 if no orders found
 
         cash_balance = cash_balance - total_buy_value
@@ -359,10 +360,8 @@ def get_cash_balance(user_id: int, db: Session = Depends(get_db)):
 
         logger.info(f"Retrieved cash balance for user {user_id}: {cash_balance}")
 
-        # send the cash balance only if the portfolio holding summary is retrieved
-        if portfolio_holding_flag:
-            return {"cash_balance": round(cash_balance,2)}
-        return {"cash_balance": 0}
+        # Always return the cash balance
+        return {"cash_balance": round(cash_balance, 2)}
     except HTTPException:
         raise
     except Exception as e:
@@ -2484,10 +2483,11 @@ async def confirm_trade(params: FunctionCallParams):
         }
         
         if order.buy_sell == "Buy":
+            # Only check against other "Under Review" orders since "Placed" orders are already executed
             total_buy_amount = db.query(func.sum(OrderBook.amount)).filter(
                 OrderBook.user_id == user_id,
                 OrderBook.buy_sell == "Buy",
-                OrderBook.order_status.in_(["Placed", "Under Review"])  # Include both Placed and Under Review orders
+                OrderBook.order_status == "Under Review"
             ).scalar() or 0  # Default to 0 if no buy orders exist
             remaining_cash_available = cash_balance - total_buy_amount
 
@@ -2505,12 +2505,13 @@ async def confirm_trade(params: FunctionCallParams):
 
         if order.buy_sell == "Sell":
             asset_total_qty = db.query(UserPortfolio.asset_total_units).join(AssetType, UserPortfolio.asset_id == AssetType.asset_id).filter(UserPortfolio.user_id == user_id, AssetType.asset_ticker == order.symbol).scalar()
-            total_qty = max(0, asset_total_qty - (  
-                        db.query(func.sum(OrderBook.qty))  
-                        .filter(  
+            # Only check against other "Under Review" sell orders since "Placed" orders are already executed
+            total_qty = max(0, asset_total_qty - (
+                        db.query(func.sum(OrderBook.qty))
+                        .filter(
                             OrderBook.user_id == user_id,
                             OrderBook.asset_id == order.asset_id,
-                            OrderBook.order_status.in_(["Placed", "Under Review"]),
+                            OrderBook.order_status == "Under Review",
                             OrderBook.buy_sell == "Sell"
                         )
                         .scalar() or 0
@@ -2528,10 +2529,107 @@ async def confirm_trade(params: FunctionCallParams):
                 await params.result_callback(error_msg)
                 return
 
-        # Update order status to Placed
-        order.order_status = "Placed"  
+        # Execute the trade by updating UserPortfolio
+        cash_asset_id = db.query(AssetType.asset_id).filter(AssetType.asset_ticker == 'CASH').scalar()
+
+        if order.buy_sell == "Buy":
+            # Deduct cash from user's cash balance
+            cash_portfolio = db.query(UserPortfolio).filter(
+                UserPortfolio.user_id == user_id,
+                UserPortfolio.asset_id == cash_asset_id
+            ).first()
+
+            if cash_portfolio:
+                cash_portfolio.investment_amount -= order.amount
+                cash_portfolio.asset_total_units -= order.amount
+
+            # Add or update the purchased asset in portfolio
+            asset_portfolio = db.query(UserPortfolio).filter(
+                UserPortfolio.user_id == user_id,
+                UserPortfolio.asset_id == order.asset_id
+            ).first()
+
+            if asset_portfolio:
+                # Update existing asset
+                total_cost = asset_portfolio.investment_amount + order.amount
+                total_units = asset_portfolio.asset_total_units + order.qty
+                asset_portfolio.avg_cost_per_unit = total_cost / total_units if total_units > 0 else 0
+                asset_portfolio.asset_total_units = total_units
+                asset_portfolio.investment_amount = total_cost
+            else:
+                # Create new asset entry
+                new_portfolio = UserPortfolio(
+                    user_id=user_id,
+                    asset_id=order.asset_id,
+                    asset_total_units=order.qty,
+                    avg_cost_per_unit=order.unit_price,
+                    investment_amount=order.amount
+                )
+                db.add(new_portfolio)
+
+            # Create transaction record
+            new_transaction = UserTransactions(
+                user_id=user_id,
+                asset_id=order.asset_id,
+                trans_type="Buy",
+                date=date.today(),
+                units=order.qty,
+                price_per_unit=order.unit_price,
+                cost=order.amount
+            )
+            db.add(new_transaction)
+
+        elif order.buy_sell == "Sell":
+            # Add cash to user's cash balance
+            cash_portfolio = db.query(UserPortfolio).filter(
+                UserPortfolio.user_id == user_id,
+                UserPortfolio.asset_id == cash_asset_id
+            ).first()
+
+            if cash_portfolio:
+                cash_portfolio.investment_amount += order.amount
+                cash_portfolio.asset_total_units += order.amount
+
+            # Reduce the sold asset in portfolio
+            asset_portfolio = db.query(UserPortfolio).filter(
+                UserPortfolio.user_id == user_id,
+                UserPortfolio.asset_id == order.asset_id
+            ).first()
+
+            if asset_portfolio:
+                asset_portfolio.asset_total_units -= order.qty
+                asset_portfolio.investment_amount -= (asset_portfolio.avg_cost_per_unit * order.qty)
+
+                # If all units are sold, we can optionally remove the entry or keep it at 0
+                if asset_portfolio.asset_total_units <= 0:
+                    asset_portfolio.asset_total_units = 0
+                    asset_portfolio.investment_amount = 0
+
+            # Create transaction record
+            new_transaction = UserTransactions(
+                user_id=user_id,
+                asset_id=order.asset_id,
+                trans_type="Sell",
+                date=date.today(),
+                units=order.qty,
+                price_per_unit=order.unit_price,
+                cost=order.amount
+            )
+            db.add(new_transaction)
+
+        # Update order status to Placed (Executed)
+        order.order_status = "Placed"
         response_data["order_status"] = order.order_status
-        db.commit() 
+
+        # Commit all changes
+        db.commit()
+
+        # Get updated cash balance after execution
+        updated_cash_balance = db.query(UserPortfolio.investment_amount).filter(
+            UserPortfolio.user_id == user_id,
+            UserPortfolio.asset_id == cash_asset_id
+        ).scalar() or 0
+        response_data["cash_balance"] = round(updated_cash_balance, 2)
 
         await send_json_to_websocket(phonenumber, {
             "type": "log",
@@ -2539,10 +2637,10 @@ async def confirm_trade(params: FunctionCallParams):
             "query_type": "trade_response",
             "data": response_data,
             "all_data" : get_order_book_status(user_id,db)
-        }) 
+        })
 
-        # Return success response  
-        success_msg = f"Trade order placed successfully."  
+        # Return success response
+        success_msg = f"Trade order executed successfully. Updated cash balance: ${updated_cash_balance:.2f}"
         await params.result_callback(success_msg)
   
     except Exception as e:  

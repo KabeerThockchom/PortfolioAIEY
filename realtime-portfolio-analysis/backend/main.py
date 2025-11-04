@@ -22,8 +22,10 @@ app = FastAPI()
 origins = [
     "http://localhost",
     "http://localhost:3000",
+    "http://localhost:3002",
     "http://localhost:8080",
     "http://127.0.0.1:3000",
+    "http://127.0.0.1:3002",
     "http://127.0.0.1:8080",
     "https://rtpa-ui-dfg9aua3gcf8fmhx.eastus2-01.azurewebsites.net",
     "https://rtpa-be.azurewebsites.net",
