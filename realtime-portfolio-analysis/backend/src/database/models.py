@@ -18,6 +18,7 @@ class User(Base):
     portfolio = relationship("UserPortfolio", backref="user", cascade="all, delete-orphan")
     transactions = relationship("UserTransactions", backref="user", cascade="all, delete-orphan")
     orders = relationship("OrderBook", backref="user", cascade="all, delete-orphan")
+    bank_accounts = relationship("UserBankAccount", backref="user", cascade="all, delete-orphan")
 
 class AssetType(Base):
     __tablename__ = 'asset_type'
@@ -210,3 +211,14 @@ class OrderBook(Base):
     order_date = Column(TIMESTAMP, nullable=False, default=func.now())
 
     asset = relationship("AssetType", backref="order_book")
+
+class UserBankAccount(Base):
+    __tablename__ = 'user_bank_accounts'
+
+    bank_account_id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False)
+    bank_name = Column(String(100), nullable=False)
+    account_number = Column(String(20), nullable=False)  # Masked format: ***1234
+    account_type = Column(String(50), nullable=False)  # Checking, Savings, Money Market
+    available_balance = Column(Float, nullable=False, default=0.0)
+    is_active = Column(Integer, nullable=False, default=1)  # 1 for active, 0 for inactive

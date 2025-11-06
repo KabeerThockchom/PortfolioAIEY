@@ -147,12 +147,37 @@ def get_dynamic_enum_values():
         db.close()
 
 portfolio_holding_flag = False
-def get_portfolio_summary(user_id: int):
+def get_portfolio_summary(user_id: int, use_realtime_prices: bool = True):
+    """
+    Get portfolio summary for a user with live stock prices.
+
+    Args:
+        user_id: User ID
+        use_realtime_prices: If True, fetches live prices from yfinance (default: True)
+
+    Returns:
+        dict with 'table' (portfolio rows) and 'total' (aggregated values)
+    """
     # setting global flag to send the cash balance once the summary is retrieved
     global portfolio_holding_flag
     portfolio_holding_flag = True
 
     db = SessionLocal()
+
+    # If using real-time prices, fetch them first
+    realtime_prices = {}
+    if use_realtime_prices:
+        # Get all tickers for this user
+        tickers = db.query(AssetType.asset_ticker).join(
+            UserPortfolio, AssetType.asset_id == UserPortfolio.asset_id
+        ).filter(
+            UserPortfolio.user_id == user_id,
+            AssetType.asset_ticker != 'CASH'
+        ).all()
+        symbols = [ticker[0] for ticker in tickers]
+        if symbols:
+            realtime_prices = get_realtime_prices_bulk(symbols)
+
     latest_price_subquery = (
     db.query(
         AssetHistory.asset_id,
@@ -210,15 +235,45 @@ def get_portfolio_summary(user_id: int):
     # Execute the query and get the results
     rows = query.all()
 
+    # Convert query results to list of dictionaries
+    table_data = [dict(row._mapping) for row in rows]
+
+    # Fix CASH row to show available balance (subtract pending buy orders)
+    for row_data in table_data:
+        if row_data.get('Ticker') == 'CASH':
+            # Use centralized cash balance calculation
+            available_cash = calculate_available_cash_balance(user_id, db)
+            logger.info(f"Portfolio Summary CASH fix - User {user_id}: Available cash = ${available_cash:.2f}")
+            row_data['Quantity'] = available_cash
+            row_data['Purchase Cost'] = available_cash
+            row_data['Current Value'] = available_cash
+            logger.info(f"Updated CASH row: Quantity={row_data['Quantity']}, Current Value={row_data['Current Value']}")
+            break
+
+    # Update with real-time prices if available
+    if use_realtime_prices and realtime_prices:
+        for row_data in table_data:
+            ticker = row_data.get('Ticker')
+            if ticker in realtime_prices and ticker != 'CASH':
+                rt_price = realtime_prices[ticker]
+                quantity = row_data.get('Quantity', 0)
+                avg_cost = row_data.get('Avg. Cost', 0)
+
+                # Update current price and recalculate values
+                row_data['Current Price'] = rt_price
+                row_data['Current Value'] = round(quantity * rt_price, 2)
+                row_data['P&L'] = round((quantity * rt_price) - row_data.get('Purchase Cost', 0), 2)
+                if avg_cost > 0:
+                    row_data['Percentage Change'] = round(((rt_price / avg_cost) - 1) * 100, 2)
+
     # Calculate totals
-    total_purchase_cost = sum(getattr(row, 'Purchase Cost') for row in rows)
-    total_current_value = sum(getattr(row, 'Current Value') for row in rows)
+    total_purchase_cost = sum(row.get('Purchase Cost', 0) for row in table_data)
+    total_current_value = sum(row.get('Current Value', 0) for row in table_data)
     total_pnl = total_current_value - total_purchase_cost
     total_percentage_change = (total_current_value / total_purchase_cost - 1) * 100 if total_purchase_cost != 0 else 0
 
     result = {}
-    # Convert query results to list of dictionaries
-    result["table"] = [dict(row._mapping) for row in rows]
+    result["table"] = table_data
 
     # Add overall totals to the result dictionary
     result["total"] = {
@@ -335,39 +390,202 @@ async def run_refresh_asset_history_table():
 
 @router.get("/api/cash_balance")
 def get_cash_balance(user_id: int, db: Session = Depends(get_db)):
+    """
+    Get available cash balance for a user.
+
+    This endpoint uses calculate_available_cash_balance() which subtracts pending
+    "Under Review" buy orders from the total CASH balance.
+
+    ALL code displaying cash balance MUST use this calculation to ensure consistency
+    across header, portfolio table, and order summary.
+    """
     try:
-        cash_asset_id = db.query(AssetType.asset_id).filter(AssetType.asset_ticker == 'CASH').scalar()
-        if not cash_asset_id:
-            raise HTTPException(status_code=404, detail="Cash asset not found")
-        
-        cash_balance = db.query(UserPortfolio.investment_amount).filter(
-            UserPortfolio.user_id == user_id,
-            UserPortfolio.asset_id == cash_asset_id
-        ).scalar() or 0
-
-        # Get the total value of buy orders that are under review (pending confirmation)
-        # Note: "Placed" orders are already executed and reflected in the cash_balance
-        total_buy_value = db.query(func.sum(OrderBook.amount)).filter(
-            OrderBook.user_id == user_id,
-            OrderBook.buy_sell == 'Buy',
-            OrderBook.order_status == 'Under Review'
-        ).scalar() or 0  # Default to 0 if no orders found
-
-        cash_balance = cash_balance - total_buy_value
-
-        if cash_balance is None:
-            raise HTTPException(status_code=404, detail="Cash balance not found for user")
+        # Use the centralized cash balance calculation function
+        cash_balance = calculate_available_cash_balance(user_id, db)
 
         logger.info(f"Retrieved cash balance for user {user_id}: {cash_balance}")
 
-        # Always return the cash balance
-        return {"cash_balance": round(cash_balance, 2)}
+        return {"cash_balance": cash_balance}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error retrieving cash balance for user {user_id}: {str(e)}")
         raise CustomException(error_message=f"Failed to retrieve cash balance for user {user_id}", error_details=e)
-    
+
+@router.get("/api/portfolio_summary")
+def get_portfolio_summary_api(user_id: int, realtime: bool = True):
+    """
+    Get portfolio summary with real-time prices.
+
+    Args:
+        user_id: User ID
+        realtime: If True, fetches live prices from yfinance (default: True)
+
+    Returns:
+        Portfolio summary with table data and totals
+    """
+    try:
+        result = get_portfolio_summary(user_id=user_id, use_realtime_prices=realtime)
+        logger.info(f"Retrieved portfolio summary for user {user_id} (realtime={realtime})")
+        return result
+    except Exception as e:
+        logger.error(f"Error retrieving portfolio summary for user {user_id}: {str(e)}")
+        raise CustomException(error_message=f"Failed to retrieve portfolio summary for user {user_id}", error_details=e)
+
+@router.get("/api/bank_accounts")
+def get_bank_accounts(user_id: int, db: Session = Depends(get_db)):
+    try:
+        bank_accounts = db.query(UserBankAccount).filter(
+            UserBankAccount.user_id == user_id,
+            UserBankAccount.is_active == 1
+        ).all()
+
+        if not bank_accounts:
+            logger.info(f"No bank accounts found for user {user_id}")
+            return {"bank_accounts": []}
+
+        accounts_list = []
+        for account in bank_accounts:
+            accounts_list.append({
+                "bank_account_id": account.bank_account_id,
+                "bank_name": account.bank_name,
+                "account_number": account.account_number,
+                "account_type": account.account_type,
+                "available_balance": round(account.available_balance, 2)
+            })
+
+        logger.info(f"Retrieved {len(accounts_list)} bank accounts for user {user_id}")
+        return {"bank_accounts": accounts_list}
+    except Exception as e:
+        logger.error(f"Error retrieving bank accounts for user {user_id}: {str(e)}")
+        raise CustomException(error_message=f"Failed to retrieve bank accounts for user {user_id}", error_details=e)
+
+@router.post("/api/transfer_funds")
+def transfer_funds(user_id: int, bank_account_id: int, amount: float, db: Session = Depends(get_db)):
+    try:
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="Transfer amount must be greater than zero")
+
+        # Get the bank account
+        bank_account = db.query(UserBankAccount).filter(
+            UserBankAccount.bank_account_id == bank_account_id,
+            UserBankAccount.user_id == user_id,
+            UserBankAccount.is_active == 1
+        ).first()
+
+        if not bank_account:
+            raise HTTPException(status_code=404, detail="Bank account not found")
+
+        # Check if bank has sufficient balance
+        if bank_account.available_balance < amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient funds in bank account. Available: ${bank_account.available_balance:.2f}"
+            )
+
+        # Get the cash asset
+        cash_asset_id = db.query(AssetType.asset_id).filter(AssetType.asset_ticker == 'CASH').scalar()
+        if not cash_asset_id:
+            raise HTTPException(status_code=404, detail="Cash asset not found")
+
+        # Get or create user's cash portfolio entry
+        user_cash_portfolio = db.query(UserPortfolio).filter(
+            UserPortfolio.user_id == user_id,
+            UserPortfolio.asset_id == cash_asset_id
+        ).first()
+
+        if not user_cash_portfolio:
+            # Create new cash portfolio entry
+            user_cash_portfolio = UserPortfolio(
+                user_id=user_id,
+                asset_id=cash_asset_id,
+                asset_total_units=amount,
+                avg_cost_per_unit=1.0,
+                investment_amount=amount
+            )
+            db.add(user_cash_portfolio)
+        else:
+            # Update existing cash portfolio
+            user_cash_portfolio.investment_amount += amount
+            user_cash_portfolio.asset_total_units += amount
+
+        # Deduct from bank account
+        bank_account.available_balance -= amount
+
+        # Commit the transaction
+        db.commit()
+
+        logger.info(f"Transferred ${amount} from bank account {bank_account_id} to brokerage for user {user_id}")
+
+        return {
+            "success": True,
+            "message": f"Successfully transferred ${amount:.2f} to your brokerage account",
+            "new_cash_balance": round(user_cash_portfolio.investment_amount, 2),
+            "bank_balance_remaining": round(bank_account.available_balance, 2)
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error transferring funds for user {user_id}: {str(e)}")
+        raise CustomException(error_message=f"Failed to transfer funds for user {user_id}", error_details=e)
+
+@router.get("/api/stock_quote/{symbol}")
+def get_stock_quote(symbol: str):
+    try:
+        import yfinance as yf
+        from curl_cffi import requests
+        from datetime import datetime
+
+        # Create session with browser impersonation
+        session = requests.Session(impersonate="chrome")
+        ticker = yf.Ticker(symbol, session=session)
+
+        # Get ticker info
+        info = ticker.info
+
+        # Get current price - try multiple sources
+        current_price = None
+        if 'currentPrice' in info and info['currentPrice']:
+            current_price = info['currentPrice']
+        elif 'regularMarketPrice' in info and info['regularMarketPrice']:
+            current_price = info['regularMarketPrice']
+        elif 'previousClose' in info and info['previousClose']:
+            current_price = info['previousClose']
+
+        if current_price is None:
+            # Fallback: try to get from history
+            hist = ticker.history(period="1d")
+            if not hist.empty:
+                current_price = hist['Close'].iloc[-1]
+
+        if current_price is None:
+            raise HTTPException(status_code=404, detail=f"Unable to fetch price for symbol {symbol}")
+
+        # Get additional quote data
+        quote_data = {
+            "symbol": symbol.upper(),
+            "current_price": round(float(current_price), 2),
+            "previous_close": round(float(info.get('previousClose', current_price)), 2),
+            "open": round(float(info.get('open', current_price)), 2),
+            "day_high": round(float(info.get('dayHigh', current_price)), 2),
+            "day_low": round(float(info.get('dayLow', current_price)), 2),
+            "volume": info.get('volume', 0),
+            "market_cap": info.get('marketCap', 0),
+            "name": info.get('longName', symbol.upper()),
+            "timestamp": datetime.now().isoformat()
+        }
+
+        logger.info(f"Retrieved stock quote for {symbol}: ${current_price}")
+        return quote_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching stock quote for {symbol}: {str(e)}")
+        raise CustomException(error_message=f"Failed to fetch stock quote for {symbol}", error_details=e)
+
 # Function to send JSON data through a specific WebSocket connection
 async def send_json_to_websocket(phonenumber: str, data: dict):
     print("Sending data to WebSocket for phone number:", phonenumber)
@@ -460,6 +678,8 @@ async def websocket_endpoint(websocket: WebSocket):
     check_order_status_tool_function = schemas.check_order_status_tool()
     cancel_order_tool_function = schemas.cancel_order_tool()
     update_cash_balance_tool_function = schemas.update_cash_balance_tool()
+    get_bank_accounts_tool_function = schemas.get_bank_accounts_tool()
+    transfer_from_bank_tool_function = schemas.transfer_from_bank_tool()
     get_price_trend_tool_function = schemas.get_price_trend_tool()
 
     tools = ToolsSchema(
@@ -479,6 +699,8 @@ async def websocket_endpoint(websocket: WebSocket):
                              check_order_status_tool_function,
                              cancel_order_tool_function,
                              update_cash_balance_tool_function,
+                             get_bank_accounts_tool_function,
+                             transfer_from_bank_tool_function,
                              get_price_trend_tool_function],)
 
     # Configure transport
@@ -542,6 +764,8 @@ async def websocket_endpoint(websocket: WebSocket):
         llm.register_function("confirm_trade_tool", confirm_trade)
         llm.register_function("cancel_order_tool", cancel_order)
         llm.register_function("update_cash_balance_tool", update_cash_balance)
+        llm.register_function("get_bank_accounts_tool", get_bank_accounts)
+        llm.register_function("transfer_from_bank_tool", transfer_from_bank)
         llm.register_function("get_price_trend_tool", get_price_trend)
 
         message = [{"role": "system", "content": f"""Start by introducing yourself.
@@ -2132,9 +2356,9 @@ async def place_trade(params: FunctionCallParams):
         user_id = params.arguments.get("user_id")
         phonenumber = db.query(User.phone_number).filter(User.user_id == user_id).scalar()
 
-        #get the cash balance of the user
-        cash_balance = db.query(UserPortfolio.investment_amount).join(AssetType, UserPortfolio.asset_id == AssetType.asset_id).filter(UserPortfolio.user_id == user_id,AssetType.asset_ticker=='CASH').scalar()
-        response_data["cash_balance"] = round(cash_balance,2)
+        #get the cash balance of the user using centralized function
+        cash_balance = calculate_available_cash_balance(user_id, db)
+        response_data["cash_balance"] = cash_balance
 
         # Update response_data with initial values
         response_data["symbol"] = params.arguments.get("symbol")
@@ -2217,20 +2441,12 @@ async def place_trade(params: FunctionCallParams):
             await params.result_callback(error_msg)
             return
 
-        # Get the latest close price for the asset
-        latest_price_record = db.query(AssetHistory)\
-            .filter(AssetHistory.asset_id == asset.asset_id)\
-            .order_by(desc(AssetHistory.date))\
-            .first()
-        response_data['unit_price'] = round(latest_price_record.close_price,3)
+        # Get the real-time price from yfinance
+        current_price = get_realtime_stock_price(response_data['symbol'])
 
-        # Calculate the amount
-        amount = round(float(response_data["quantity"]) * (float(response_data["limit_price"]) if response_data["limit_price"] else latest_price_record.close_price), 3)
-        response_data['amount'] = amount
-
-        if not latest_price_record or not latest_price_record.close_price:
-            error_msg = f"No price history found for asset {response_data['symbol']}."
-            logger.bind(frontend=True).success(f"Trade failed: {error_msg}")
+        if not current_price:
+            error_msg = f"Unable to fetch current price for {response_data['symbol']}. Please try again."
+            logger.bind(frontend=True).error(f"Trade failed: {error_msg}")
             await send_json_to_websocket(phonenumber, {
                 "type": "log",
                 "type_of_data": "text",
@@ -2241,6 +2457,12 @@ async def place_trade(params: FunctionCallParams):
             await params.result_callback(error_msg)
             return
 
+        response_data['unit_price'] = round(current_price, 2)
+
+        # Calculate the amount
+        amount = round(float(response_data["quantity"]) * (float(response_data["limit_price"]) if response_data["limit_price"] else current_price), 2)
+        response_data['amount'] = amount
+
         # Create a new order
         new_order = OrderBook(
             user_id=user_id,
@@ -2249,7 +2471,7 @@ async def place_trade(params: FunctionCallParams):
             symbol=response_data["symbol"],
             description=f"{response_data['action'].capitalize()} {response_data['quantity']} units of {response_data['symbol']}",
             buy_sell=response_data['action'].capitalize(),
-            unit_price=round(latest_price_record.close_price, 3),
+            unit_price=round(current_price, 2),
             limit_price=float(response_data["limit_price"]) if response_data["order_type"] == "limit" else None,
             qty=float(response_data["quantity"]),
             amount=amount,
@@ -2318,8 +2540,8 @@ async def update_trade(params: FunctionCallParams):
         action = params.arguments.get("action")  
 
         phonenumber = db.query(User.phone_number).filter(User.user_id == user_id).scalar()
-        #get the cash balance of the user need UserPortfolio and AssetType tables
-        cash_balance = db.query(UserPortfolio.investment_amount).join(AssetType, UserPortfolio.asset_id == AssetType.asset_id).filter(UserPortfolio.user_id == user_id,AssetType.asset_ticker=='CASH').scalar()
+        #get the cash balance of the user using centralized function
+        cash_balance = calculate_available_cash_balance(user_id, db)
 
         if action == "buy":
             if order_id is None:
@@ -2365,21 +2587,18 @@ async def update_trade(params: FunctionCallParams):
                 raise ValueError("Invalid action. Must be 'buy' or 'sell'.")  
             order.buy_sell = action.capitalize()  
 
-        # Get the latest close price for the asset
-        latest_price_record = db.query(AssetHistory)\
-            .filter(AssetHistory.asset_id == order.asset_id)\
-            .order_by(desc(AssetHistory.date))\
-            .first()
-    
-        if not latest_price_record:  
-            raise ValueError("No price history found for the updated asset.")  
-        
-        # Recalculate the amount  
-        if quantity or limit_price:              
-            updated_price = float(limit_price) if limit_price else latest_price_record.close_price
+        # Get the real-time price from yfinance
+        current_price = get_realtime_stock_price(order.symbol)
+
+        if not current_price:
+            raise ValueError(f"Unable to fetch current price for {order.symbol}. Please try again.")
+
+        # Recalculate the amount
+        if quantity or limit_price:
+            updated_price = float(limit_price) if limit_price else current_price
             updated_quantity = float(quantity) if quantity else order.qty
-            order.amount = round(updated_quantity * updated_price, 3)  # update the amount based on the latest price and quantity
-            order.unit_price = round(latest_price_record.close_price, 3)  # update the unit price to the latest close price
+            order.amount = round(updated_quantity * updated_price, 2)  # update the amount based on the latest price and quantity
+            order.unit_price = round(current_price, 2)  # update the unit price to the latest close price
 
         response_data = {
             "trade": "Stocks/ETFs/Mutual Fund",
@@ -2451,13 +2670,14 @@ async def confirm_trade(params: FunctionCallParams):
         else:
             # Fetch the order  
             order = db.query(OrderBook).filter(OrderBook.order_id == order_id, OrderBook.order_status == "Under Review").first()  
-        if not order:  
-            raise ValueError("Trade order not found or is not in under review state.")  
-  
-        cash_balance = db.query(UserPortfolio.investment_amount).join(AssetType, UserPortfolio.asset_id == AssetType.asset_id).filter(UserPortfolio.user_id == user_id,AssetType.asset_ticker=='CASH').scalar()
+        if not order:
+            raise ValueError("Trade order not found or is not in under review state.")
 
-        if cash_balance < order.amount and order.buy_sell == "Buy":
-            error_msg = f"Insufficient cash balance to confirm the trade. Your cash balance is {cash_balance}, but the required amount is {order.amount}."
+        # Get raw CASH balance to check if we can execute this specific order
+        raw_cash_balance = db.query(UserPortfolio.investment_amount).join(AssetType, UserPortfolio.asset_id == AssetType.asset_id).filter(UserPortfolio.user_id == user_id,AssetType.asset_ticker=='CASH').scalar()
+
+        if raw_cash_balance < order.amount and order.buy_sell == "Buy":
+            error_msg = f"Insufficient cash balance to confirm the trade. Your cash balance is {raw_cash_balance}, but the required amount is {order.amount}."
             await send_json_to_websocket(phonenumber, {
                 "type": "log",
                 "type_of_data": "text",
@@ -2466,7 +2686,10 @@ async def confirm_trade(params: FunctionCallParams):
             })
             await params.result_callback(error_msg)
             return
-        
+
+        # Get available cash balance for display (subtracts ALL pending orders including this one)
+        available_cash = calculate_available_cash_balance(user_id, db)
+
         response_data = {
             "trade": "Stocks/ETFs/Mutual Fund",
             "account": "Brokerage Account",
@@ -2477,22 +2700,15 @@ async def confirm_trade(params: FunctionCallParams):
             "unit_price": order.unit_price,
             "limit_price": order.limit_price,
             "amount": order.amount,
-            "cash_balance": round(cash_balance - order.amount,2),  # Deduct the amount from cash balance
+            "cash_balance": available_cash,  # Use centralized calculation
             "order_date": order.order_date.strftime("%Y-%m-%d %H:%M:%S"),
             "order_status": order.order_status,
         }
         
         if order.buy_sell == "Buy":
-            # Only check against other "Under Review" orders since "Placed" orders are already executed
-            total_buy_amount = db.query(func.sum(OrderBook.amount)).filter(
-                OrderBook.user_id == user_id,
-                OrderBook.buy_sell == "Buy",
-                OrderBook.order_status == "Under Review"
-            ).scalar() or 0  # Default to 0 if no buy orders exist
-            remaining_cash_available = cash_balance - total_buy_amount
-
-            if remaining_cash_available < 0:
-                error_msg = f"Insufficient cash balance to confirm the trade. Your remaining cash available to trade is {remaining_cash_available}, but the required amount is {order.amount}."
+            # Verify we have enough available cash (this check is redundant but kept for safety)
+            if available_cash < 0:
+                error_msg = f"Insufficient available cash to confirm the trade. Available cash: ${available_cash:.2f}, Required: ${order.amount:.2f}"
                 await send_json_to_websocket(phonenumber, {
                     "type": "log",
                     "type_of_data": "text",
@@ -2624,12 +2840,9 @@ async def confirm_trade(params: FunctionCallParams):
         # Commit all changes
         db.commit()
 
-        # Get updated cash balance after execution
-        updated_cash_balance = db.query(UserPortfolio.investment_amount).filter(
-            UserPortfolio.user_id == user_id,
-            UserPortfolio.asset_id == cash_asset_id
-        ).scalar() or 0
-        response_data["cash_balance"] = round(updated_cash_balance, 2)
+        # Get updated cash balance after execution using centralized function
+        updated_cash_balance = calculate_available_cash_balance(user_id, db)
+        response_data["cash_balance"] = updated_cash_balance
 
         await send_json_to_websocket(phonenumber, {
             "type": "log",
@@ -2789,7 +3002,149 @@ async def update_cash_balance(params: FunctionCallParams):
         await params.result_callback(f"Sorry, I encountered an error while updating the cash balance: {str(e)}")
         raise CustomException(error_message="Failed to update cash balance", error_details=sys.exc_info())
     finally:
-        db.close()  
+        db.close()
+
+async def get_bank_accounts(params: FunctionCallParams):
+    db = SessionLocal()
+    try:
+        user_id = params.arguments.get("user_id")
+
+        bank_accounts = db.query(UserBankAccount).filter(
+            UserBankAccount.user_id == user_id,
+            UserBankAccount.is_active == 1
+        ).all()
+
+        if not bank_accounts:
+            await params.result_callback("You don't have any bank accounts linked. Please contact support to add a bank account.")
+            return
+
+        accounts_info = []
+        for account in bank_accounts:
+            accounts_info.append(
+                f"{account.bank_name} {account.account_type} ending in {account.account_number} "
+                f"with available balance of ${account.available_balance:,.2f}"
+            )
+
+        phonenumber = db.query(User.phone_number).filter(User.user_id == user_id).scalar()
+
+        accounts_data = {
+            "bank_accounts": [
+                {
+                    "bank_account_id": acc.bank_account_id,
+                    "bank_name": acc.bank_name,
+                    "account_number": acc.account_number,
+                    "account_type": acc.account_type,
+                    "available_balance": round(acc.available_balance, 2)
+                }
+                for acc in bank_accounts
+            ]
+        }
+
+        await send_json_to_websocket(phonenumber, {
+            "type": "log",
+            "type_of_data": "table",
+            "query_type": "bank_accounts",
+            "data": accounts_data
+        })
+
+        result_message = f"You have {len(bank_accounts)} bank account(s):\n" + "\n".join(accounts_info)
+        await params.result_callback(result_message)
+
+    except Exception as e:
+        logger.error(f"Error retrieving bank accounts: {str(e)}")
+        await params.result_callback(f"Sorry, I encountered an error while retrieving your bank accounts: {str(e)}")
+        raise CustomException(error_message="Failed to retrieve bank accounts", error_details=sys.exc_info())
+    finally:
+        db.close()
+
+async def transfer_from_bank(params: FunctionCallParams):
+    db = SessionLocal()
+    try:
+        user_id = params.arguments.get("user_id")
+        bank_account_id = params.arguments.get("bank_account_id")
+        amount = params.arguments.get("amount")
+
+        if amount is None or amount <= 0:
+            await params.result_callback("Please provide a valid transfer amount greater than zero.")
+            return
+
+        # Get the bank account
+        bank_account = db.query(UserBankAccount).filter(
+            UserBankAccount.bank_account_id == bank_account_id,
+            UserBankAccount.user_id == user_id,
+            UserBankAccount.is_active == 1
+        ).first()
+
+        if not bank_account:
+            await params.result_callback("Bank account not found. Please verify the account ID.")
+            return
+
+        # Check if bank has sufficient balance
+        if bank_account.available_balance < amount:
+            await params.result_callback(
+                f"Insufficient funds in your {bank_account.bank_name} account. "
+                f"Available balance is ${bank_account.available_balance:,.2f}, but you're trying to transfer ${amount:,.2f}."
+            )
+            return
+
+        # Get the cash asset
+        cash_asset_id = db.query(AssetType.asset_id).filter(AssetType.asset_ticker == 'CASH').scalar()
+        if not cash_asset_id:
+            await params.result_callback("Cash asset not found in system.")
+            return
+
+        # Get or create user's cash portfolio entry
+        user_cash_portfolio = db.query(UserPortfolio).filter(
+            UserPortfolio.user_id == user_id,
+            UserPortfolio.asset_id == cash_asset_id
+        ).first()
+
+        if not user_cash_portfolio:
+            # Create new cash portfolio entry
+            user_cash_portfolio = UserPortfolio(
+                user_id=user_id,
+                asset_id=cash_asset_id,
+                asset_total_units=amount,
+                avg_cost_per_unit=1.0,
+                investment_amount=amount
+            )
+            db.add(user_cash_portfolio)
+        else:
+            # Update existing cash portfolio
+            user_cash_portfolio.investment_amount += amount
+            user_cash_portfolio.asset_total_units += amount
+
+        # Deduct from bank account
+        bank_account.available_balance -= amount
+
+        # Commit the transaction
+        db.commit()
+
+        phonenumber = db.query(User.phone_number).filter(User.user_id == user_id).scalar()
+
+        # Send updated portfolio
+        result = get_portfolio_summary(user_id=user_id)
+        await send_json_to_websocket(phonenumber, {
+            "type": "log",
+            "type_of_data": "table",
+            "query_type": "user_portfolio",
+            "data": result
+        })
+
+        result_message = (
+            f"Successfully transferred ${amount:,.2f} from your {bank_account.bank_name} "
+            f"{bank_account.account_type} to your brokerage account. "
+            f"Your new brokerage cash balance is ${user_cash_portfolio.investment_amount:,.2f}."
+        )
+        await params.result_callback(result_message)
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error transferring funds: {str(e)}")
+        await params.result_callback(f"Sorry, I encountered an error while transferring funds: {str(e)}")
+        raise CustomException(error_message="Failed to transfer funds", error_details=sys.exc_info())
+    finally:
+        db.close()
 
 async def get_price_trend(params: FunctionCallParams):
     session = SessionLocal()

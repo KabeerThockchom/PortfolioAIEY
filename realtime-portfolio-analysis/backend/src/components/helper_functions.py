@@ -14,6 +14,152 @@ class DateEncoder(json.JSONEncoder):
             return obj.isoformat()
         return super().default(obj)
 
+def calculate_available_cash_balance(user_id, db_session):
+    """
+    Centralized function to calculate available cash balance for a user.
+    This function ensures consistency across all API endpoints and tools.
+
+    IMPORTANT: ALL code that needs to display or check cash balance MUST use this function.
+    Do NOT query UserPortfolio.investment_amount for CASH directly, as it does not account
+    for pending "Under Review" buy orders.
+
+    Formula: Available Cash = Total CASH in UserPortfolio - Sum of "Under Review" Buy Orders
+
+    Args:
+        user_id: The user's ID
+        db_session: SQLAlchemy database session
+
+    Returns:
+        float: Available cash balance (total cash - pending buy orders), rounded to 2 decimals
+
+    Raises:
+        Exception: If cash asset not found or other database errors
+
+    Used in:
+        - GET /api/cash_balance (header display)
+        - get_portfolio_summary (portfolio table CASH row)
+        - place_trade, update_trade, confirm_trade (order summary)
+        - transfer_from_bank, get_bank_accounts (fund transfer tools)
+    """
+    from sqlalchemy import func
+
+    # Get the cash asset ID
+    cash_asset_id = db_session.query(AssetType.asset_id).filter(
+        AssetType.asset_ticker == 'CASH'
+    ).scalar()
+
+    if not cash_asset_id:
+        raise Exception("Cash asset not found in database")
+
+    # Get the total cash balance from user's portfolio
+    cash_balance = db_session.query(UserPortfolio.investment_amount).filter(
+        UserPortfolio.user_id == user_id,
+        UserPortfolio.asset_id == cash_asset_id
+    ).scalar() or 0.0
+
+    # Get the total value of buy orders that are under review (pending confirmation)
+    # Note: "Placed" orders are already executed and reflected in the cash_balance
+    total_pending_buy_value = db_session.query(func.sum(OrderBook.amount)).filter(
+        OrderBook.user_id == user_id,
+        OrderBook.buy_sell == 'Buy',
+        OrderBook.order_status == 'Under Review'
+    ).scalar() or 0.0
+
+    # Available cash = total cash - pending buy orders
+    available_cash = cash_balance - total_pending_buy_value
+
+    return round(available_cash, 2)
+
+def get_realtime_prices_bulk(symbols):
+    """
+    Fetch real-time prices for multiple symbols using yfinance.
+
+    Args:
+        symbols: List of ticker symbols
+
+    Returns:
+        dict: Mapping of symbol to current price {symbol: price}
+    """
+    import yfinance as yf
+    from curl_cffi import requests
+
+    prices = {}
+    session = requests.Session(impersonate="chrome")
+
+    for symbol in symbols:
+        try:
+            ticker = yf.Ticker(symbol, session=session)
+            info = ticker.info
+
+            # Try multiple price sources
+            current_price = None
+            if 'currentPrice' in info and info['currentPrice']:
+                current_price = info['currentPrice']
+            elif 'regularMarketPrice' in info and info['regularMarketPrice']:
+                current_price = info['regularMarketPrice']
+            elif 'previousClose' in info and info['previousClose']:
+                current_price = info['previousClose']
+
+            if current_price is None:
+                # Fallback to history
+                hist = ticker.history(period="1d")
+                if not hist.empty:
+                    current_price = hist['Close'].iloc[-1]
+
+            if current_price:
+                prices[symbol] = round(float(current_price), 2)
+        except Exception as e:
+            print(f"Error fetching price for {symbol}: {e}")
+            # Keep the symbol out of the dict if we can't fetch it
+
+    return prices
+
+def get_realtime_stock_price(symbol):
+    """
+    Fetch real-time price for a single stock symbol using yfinance.
+
+    Args:
+        symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
+
+    Returns:
+        float: Current stock price, or None if unable to fetch
+
+    Example:
+        price = get_realtime_stock_price('AAPL')
+        # Returns: 211.14
+    """
+    import yfinance as yf
+    from curl_cffi import requests
+
+    try:
+        session = requests.Session(impersonate="chrome")
+        ticker = yf.Ticker(symbol, session=session)
+        info = ticker.info
+
+        # Try multiple price sources
+        current_price = None
+        if 'currentPrice' in info and info['currentPrice']:
+            current_price = info['currentPrice']
+        elif 'regularMarketPrice' in info and info['regularMarketPrice']:
+            current_price = info['regularMarketPrice']
+        elif 'previousClose' in info and info['previousClose']:
+            current_price = info['previousClose']
+
+        if current_price is None:
+            # Fallback to history
+            hist = ticker.history(period="1d")
+            if not hist.empty:
+                current_price = hist['Close'].iloc[-1]
+
+        if current_price:
+            return round(float(current_price), 2)
+        else:
+            print(f"Warning: Could not fetch price for {symbol}")
+            return None
+    except Exception as e:
+        print(f"Error fetching price for {symbol}: {e}")
+        return None
+
 def ticker_to_asset_name_mapping():
     """
     Create a mapping of asset tickers to asset names.
