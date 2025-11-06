@@ -11,15 +11,18 @@ export default function PortfolioTradeForm({ trade, userId, onCashBalanceUpdate 
 
   // Check if cash balance is insufficient for a buy order
   const isBuyOrder = t.action?.toLowerCase() === 'buy';
-  const cashBalance = t.cash_balance || 0;
-  const orderAmount = t.amount || 0;
-  const isInsufficientFunds = isBuyOrder && cashBalance < orderAmount;
-  const shortfall = isInsufficientFunds ? orderAmount - cashBalance : 0;
+  const cashBalance = parseFloat(t.cash_balance) || 0;
+  const orderAmount = parseFloat(t.amount) || 0;
+  const isInsufficientFunds = isBuyOrder && orderAmount > cashBalance && orderAmount > 0;
+  const shortfall = isInsufficientFunds ? Math.abs(orderAmount - cashBalance) : 0;
+
+  console.log('PortfolioTradeForm - userId:', userId);
+  console.log('PortfolioTradeForm - cashBalance:', cashBalance, 'orderAmount:', orderAmount, 'shortfall:', shortfall);
 
   const handleTransferSuccess = (data) => {
     // Notify parent component to refresh cash balance
     if (onCashBalanceUpdate) {
-      onCashBalanceUpdate(data.new_cash_balance);
+      onCashBalanceUpdate();
     }
     setShowTransferModal(false);
   };

@@ -145,7 +145,9 @@ const ChatLayout = ({
   fundFactSheetData,
   tradeData,
   ragData,
-  ragResponse
+  ragResponse,
+  userId,
+  onCashBalanceUpdate
 }) => {
  
   const selectDisplayType = (chartConfig) => {
@@ -223,7 +225,7 @@ const ChatLayout = ({
   </div>
 
   <div className="flex flex-col gap-6 w-full max-w-xs flex-shrink-0 ">
-    {tradeData && <PortfolioTradeForm trade={tradeData} />}
+    {tradeData && <PortfolioTradeForm trade={tradeData} userId={userId} onCashBalanceUpdate={onCashBalanceUpdate} />}
     {newsData && <NewsCard news={newsData} />}
      {fundFactSheetData && <FundFactSheetCard fund={fundFactSheetData} />}
   </div>

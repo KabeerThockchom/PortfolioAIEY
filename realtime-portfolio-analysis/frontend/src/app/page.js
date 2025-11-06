@@ -13,6 +13,7 @@ import ChatLayout from "./component/chatLayout";
 import SidebarContent from "./component/layout/sideBarContent";
 import protobuf from "protobufjs";
 import Login from "./component/login";
+import FundTransferModal from "./component/FundTransferModal";
 
 const SAMPLE_RATE = 16000;
 const NUM_CHANNELS = 1;
@@ -43,6 +44,11 @@ export default function Home() {
   // NEW: Cash balance state and fetcher
   const [cashBalance, setCashBalance] = useState(0);
   const [loadingCash, setLoadingCash] = useState(false);
+  const [userId, setUserId] = useState(null);
+
+  // Fund transfer modal state (triggered by voice bot)
+  const [showVoiceBotTransferModal, setShowVoiceBotTransferModal] = useState(false);
+  const [transferModalData, setTransferModalData] = useState(null);
 
   const fetchCashBalance = useCallback(async () => {
     let userId = null;
@@ -95,6 +101,7 @@ export default function Home() {
       try {
         const parsedUser = JSON.parse(storedUser);
         setUserSession(parsedUser);
+        setUserId(parsedUser?.data?.user_id || null);
         setIsLoggedIn(true);
         fetchCashBalance(); // Fetch on login/mount
       } catch (error) {
@@ -235,6 +242,10 @@ export default function Home() {
         }
          else if (dataType.query_type === "rag_response") {
           setRagResponse(dataType);
+        } else if (dataType.query_type === "trigger_fund_transfer_modal") {
+          console.log("Fund transfer modal trigger received:", dataType);
+          setTransferModalData(dataType.data);
+          setShowVoiceBotTransferModal(true);
         }
       }
     });
@@ -566,6 +577,8 @@ export default function Home() {
                   tradeData={tradeData}
                   ragData={ragData}
                   ragResponse={ragResponse}
+                  userId={userId}
+                  onCashBalanceUpdate={fetchCashBalance}
                 />
               </div>
             </main>
@@ -573,6 +586,18 @@ export default function Home() {
         </Fragment>
       )}
       {!isLoggedIn && <Login onLogin={onLogin} />}
+
+      {/* Voice bot triggered fund transfer modal */}
+      <FundTransferModal
+        open={showVoiceBotTransferModal}
+        onClose={() => setShowVoiceBotTransferModal(false)}
+        userId={userId}
+        requiredAmount={0}
+        onTransferSuccess={() => {
+          fetchCashBalance();
+          setShowVoiceBotTransferModal(false);
+        }}
+      />
     </div>
   );
 }

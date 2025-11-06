@@ -136,7 +136,6 @@ const StockTable = ({ stockTableData }) => {
                 </TableCell>
                 <TableCell
                   align="center"
-                  strong
                   style={{ color: getColor(totalData.total_percentage_change) }}
                 >
                   <strong>{totalData.total_percentage_change}</strong>

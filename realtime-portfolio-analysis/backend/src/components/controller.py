@@ -3040,14 +3040,17 @@ async def get_bank_accounts(params: FunctionCallParams):
             ]
         }
 
+        # Send UI trigger to open the fund transfer modal
         await send_json_to_websocket(phonenumber, {
-            "type": "log",
-            "type_of_data": "table",
-            "query_type": "bank_accounts",
-            "data": accounts_data
+            "type": "ui_action",
+            "query_type": "trigger_fund_transfer_modal",
+            "data": {
+                "user_id": user_id,
+                "bank_accounts": accounts_data["bank_accounts"]
+            }
         })
 
-        result_message = f"You have {len(bank_accounts)} bank account(s):\n" + "\n".join(accounts_info)
+        result_message = f"I've opened the fund transfer interface for you. You have {len(bank_accounts)} bank account(s) available. Please use the interface on your screen to complete the transfer."
         await params.result_callback(result_message)
 
     except Exception as e:
