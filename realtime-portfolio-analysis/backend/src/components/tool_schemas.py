@@ -506,7 +506,7 @@ class PortfolioToolSchemas:
     def transfer_from_bank_tool(cls):
         return FunctionSchema(
             name="transfer_from_bank_tool",
-            description="Use this tool to transfer funds from a user's bank account to their brokerage account. The user can select from available bank accounts and specify the transfer amount. Use this when the user wants to add funds to their brokerage account or when they have insufficient cash balance for a trade.",
+            description="Use this tool to transfer funds from a user's bank account to their brokerage account. The user can select from available bank accounts by name (e.g., 'Chase', 'Wells Fargo', 'Bank of America') or by ID and specify the transfer amount. Use this when the user wants to add funds to their brokerage account or when they have insufficient cash balance for a trade.",
             properties={
                 "user_id": {
                     "type": "string",
@@ -514,14 +514,18 @@ class PortfolioToolSchemas:
                 },
                 "bank_account_id": {
                     "type": "number",
-                    "description": "The ID of the bank account to transfer from. Get this from get_bank_accounts_tool first.",
+                    "description": "The ID of the bank account to transfer from. Either bank_account_id or bank_name must be provided.",
+                },
+                "bank_name": {
+                    "type": "string",
+                    "description": "The name of the bank to transfer from (e.g., 'Chase', 'Wells Fargo', 'Bank of America', 'BofA'). Supports partial names and fuzzy matching. Either bank_account_id or bank_name must be provided.",
                 },
                 "amount": {
                     "type": "number",
                     "description": "The amount to transfer from the bank account to the brokerage account (must be positive)",
                 },
             },
-            required=["user_id", "bank_account_id", "amount"]
+            required=["user_id", "amount"]
         )
 
     @classmethod

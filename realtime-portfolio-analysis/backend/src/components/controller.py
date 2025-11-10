@@ -3065,21 +3065,99 @@ async def transfer_from_bank(params: FunctionCallParams):
     try:
         user_id = params.arguments.get("user_id")
         bank_account_id = params.arguments.get("bank_account_id")
+        bank_name = params.arguments.get("bank_name")
         amount = params.arguments.get("amount")
 
         if amount is None or amount <= 0:
             await params.result_callback("Please provide a valid transfer amount greater than zero.")
             return
 
-        # Get the bank account
-        bank_account = db.query(UserBankAccount).filter(
-            UserBankAccount.bank_account_id == bank_account_id,
-            UserBankAccount.user_id == user_id,
-            UserBankAccount.is_active == 1
-        ).first()
+        # Determine which method to use for finding the bank account
+        bank_account = None
+
+        if bank_account_id:
+            # Use bank_account_id if provided
+            bank_account = db.query(UserBankAccount).filter(
+                UserBankAccount.bank_account_id == bank_account_id,
+                UserBankAccount.user_id == user_id,
+                UserBankAccount.is_active == 1
+            ).first()
+
+            if not bank_account:
+                await params.result_callback("Bank account not found. Please verify the account ID.")
+                return
+
+        elif bank_name:
+            # Use fuzzy name matching if bank_name is provided
+            # Get all active bank accounts for the user
+            all_accounts = db.query(UserBankAccount).filter(
+                UserBankAccount.user_id == user_id,
+                UserBankAccount.is_active == 1
+            ).all()
+
+            if not all_accounts:
+                await params.result_callback("No active bank accounts found for your account.")
+                return
+
+            # Fuzzy matching logic - supports partial names
+            # Common abbreviations mapping
+            bank_aliases = {
+                "chase": ["chase", "chase bank"],
+                "wells": ["wells", "wells fargo", "wf"],
+                "bofa": ["bofa", "bof a", "bank of america", "boa"],
+                "citi": ["citi", "citibank"],
+                "capital": ["capital one", "capital"],
+            }
+
+            # Normalize the input bank name
+            normalized_input = bank_name.lower().strip()
+
+            # Try to find matching accounts
+            matching_accounts = []
+            for account in all_accounts:
+                account_name_lower = account.bank_name.lower()
+
+                # Check for exact match
+                if normalized_input in account_name_lower or account_name_lower in normalized_input:
+                    matching_accounts.append(account)
+                    continue
+
+                # Check for alias matches
+                for key, aliases in bank_aliases.items():
+                    if normalized_input in aliases or any(alias in normalized_input for alias in aliases):
+                        if key in account_name_lower:
+                            matching_accounts.append(account)
+                            break
+
+            if len(matching_accounts) == 0:
+                available_banks = ", ".join([acc.bank_name for acc in all_accounts])
+                await params.result_callback(
+                    f"I couldn't find a bank account matching '{bank_name}'. "
+                    f"Your available bank accounts are: {available_banks}."
+                )
+                return
+
+            elif len(matching_accounts) > 1:
+                matches_list = ", ".join([f"{acc.bank_name} ({acc.account_type})" for acc in matching_accounts])
+                await params.result_callback(
+                    f"I found multiple bank accounts matching '{bank_name}': {matches_list}. "
+                    f"Please be more specific with the bank name."
+                )
+                return
+
+            else:
+                # Exactly one match found
+                bank_account = matching_accounts[0]
+
+        else:
+            # Neither bank_account_id nor bank_name provided
+            await params.result_callback(
+                "Please provide either a bank account ID or bank name to transfer from."
+            )
+            return
 
         if not bank_account:
-            await params.result_callback("Bank account not found. Please verify the account ID.")
+            await params.result_callback("Bank account not found. Please verify the account information.")
             return
 
         # Check if bank has sufficient balance

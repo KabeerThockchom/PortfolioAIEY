@@ -70,9 +70,44 @@ def calculate_available_cash_balance(user_id, db_session):
 
     return round(available_cash, 2)
 
+def get_latest_db_price(symbol):
+    """
+    Fetch the latest price for a symbol from the asset_history table.
+    This is used as a fallback when the YahooFinance API fails.
+
+    Args:
+        symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
+
+    Returns:
+        tuple: (price, date) - Latest price and its date, or (None, None) if not found
+    """
+    db = SessionLocal()
+    try:
+        # Get the asset ID for the symbol
+        asset = db.query(AssetType).filter(AssetType.asset_ticker == symbol).first()
+
+        if not asset:
+            return None, None
+
+        # Get the most recent price from asset_history
+        latest_history = db.query(AssetHistory).filter(
+            AssetHistory.asset_id == asset.asset_id
+        ).order_by(AssetHistory.date.desc()).first()
+
+        if latest_history:
+            return round(float(latest_history.close_price), 2), latest_history.date
+
+        return None, None
+    except Exception as e:
+        print(f"Error fetching database price for {symbol}: {e}")
+        return None, None
+    finally:
+        db.close()
+
 def get_realtime_prices_bulk(symbols):
     """
     Fetch real-time prices for multiple symbols using yfinance.
+    Falls back to database prices if API fails.
 
     Args:
         symbols: List of ticker symbols
@@ -108,15 +143,26 @@ def get_realtime_prices_bulk(symbols):
 
             if current_price:
                 prices[symbol] = round(float(current_price), 2)
+            else:
+                # API failed, try database fallback
+                db_price, price_date = get_latest_db_price(symbol)
+                if db_price is not None:
+                    prices[symbol] = db_price
+                    print(f"WARNING: Using stale database price for {symbol}: ${db_price} (from {price_date})")
         except Exception as e:
             print(f"Error fetching price for {symbol}: {e}")
-            # Keep the symbol out of the dict if we can't fetch it
+            # Try database fallback
+            db_price, price_date = get_latest_db_price(symbol)
+            if db_price is not None:
+                prices[symbol] = db_price
+                print(f"WARNING: Using stale database price for {symbol}: ${db_price} (from {price_date})")
 
     return prices
 
 def get_realtime_stock_price(symbol):
     """
     Fetch real-time price for a single stock symbol using yfinance.
+    Falls back to database prices if API fails.
 
     Args:
         symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
@@ -154,10 +200,20 @@ def get_realtime_stock_price(symbol):
         if current_price:
             return round(float(current_price), 2)
         else:
-            print(f"Warning: Could not fetch price for {symbol}")
+            # API failed, try database fallback
+            print(f"Warning: Could not fetch live price for {symbol}, trying database fallback...")
+            db_price, price_date = get_latest_db_price(symbol)
+            if db_price is not None:
+                print(f"WARNING: Using stale database price for {symbol}: ${db_price} (from {price_date})")
+                return db_price
             return None
     except Exception as e:
         print(f"Error fetching price for {symbol}: {e}")
+        # Try database fallback
+        db_price, price_date = get_latest_db_price(symbol)
+        if db_price is not None:
+            print(f"WARNING: Using stale database price for {symbol}: ${db_price} (from {price_date})")
+            return db_price
         return None
 
 def ticker_to_asset_name_mapping():
