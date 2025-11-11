@@ -492,11 +492,15 @@ class PortfolioToolSchemas:
     def get_bank_accounts_tool(cls):
         return FunctionSchema(
             name="get_bank_accounts_tool",
-            description="Use this tool to retrieve the list of bank accounts for a user. This shows available bank accounts that can be used to transfer funds to the brokerage account.",
+            description="Use this tool to retrieve and display the user's bank accounts with balances. When user wants to view their accounts verbally, set show_ui=false. When user needs to transfer funds, set show_ui=true to open the transfer interface.",
             properties={
                 "user_id": {
                     "type": "string",
                     "description": "The user_id of the authenticated user",
+                },
+                "show_ui": {
+                    "type": "boolean",
+                    "description": "Set to true to open the fund transfer UI interface. Set to false to provide verbal response of bank accounts. Default is false.",
                 },
             },
             required=["user_id"]

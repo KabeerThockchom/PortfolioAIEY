@@ -13,7 +13,7 @@ import ChatLayout from "./component/chatLayout";
 import SidebarContent from "./component/layout/sideBarContent";
 import protobuf from "protobufjs";
 import Login from "./component/login";
-import FundTransferModal from "./component/FundTransferModal";
+import FundTransferPanel from "./component/FundTransferPanel";
 
 const SAMPLE_RATE = 16000;
 const NUM_CHANNELS = 1;
@@ -46,9 +46,10 @@ export default function Home() {
   const [loadingCash, setLoadingCash] = useState(false);
   const [userId, setUserId] = useState(null);
 
-  // Fund transfer modal state (triggered by voice bot)
-  const [showVoiceBotTransferModal, setShowVoiceBotTransferModal] = useState(false);
-  const [transferModalData, setTransferModalData] = useState(null);
+  // Fund transfer panel state (triggered by voice bot or insufficient funds button)
+  const [showTransferPanel, setShowTransferPanel] = useState(false);
+  const [transferPanelAmount, setTransferPanelAmount] = useState(0);
+  const [transferCompleteTrigger, setTransferCompleteTrigger] = useState(0);
 
   const fetchCashBalance = useCallback(async () => {
     let userId = null;
@@ -90,6 +91,23 @@ export default function Home() {
       setLoadingCash(false);
     }
   }, []);
+
+  // Handler to show transfer panel
+  const handleShowTransferPanel = useCallback((requiredAmount = 0) => {
+    setTransferPanelAmount(requiredAmount);
+    setShowTransferPanel(true);
+  }, []);
+
+  // Handler to clear/hide transfer panel
+  const handleClearTransferPanel = useCallback(() => {
+    setShowTransferPanel(false);
+    setTransferPanelAmount(0);
+  }, []);
+
+  // Handler for transfer success
+  const handleTransferSuccess = useCallback(() => {
+    fetchCashBalance();
+  }, [fetchCashBalance]);
 
   useEffect(() => {
     isMutedRef.current = isMuted;
@@ -243,9 +261,19 @@ export default function Home() {
          else if (dataType.query_type === "rag_response") {
           setRagResponse(dataType);
         } else if (dataType.query_type === "trigger_fund_transfer_modal") {
-          console.log("Fund transfer modal trigger received:", dataType);
-          setTransferModalData(dataType.data);
-          setShowVoiceBotTransferModal(true);
+          console.log("Fund transfer panel trigger received:", dataType);
+          const amount = dataType.data?.required_amount || 0;
+          setTransferPanelAmount(amount);
+          setShowTransferPanel(true);
+        } else if (dataType.query_type === "fund_transfer_complete") {
+          console.log("Fund transfer completion received:", dataType);
+          // Panel will update its own state based on success/error
+          // We just need to refresh the cash balance and trigger panel refresh
+          if (dataType.success) {
+            fetchCashBalance();
+            // Trigger FundTransferPanel to refetch bank accounts
+            setTransferCompleteTrigger(prev => prev + 1);
+          }
         }
       }
     });
@@ -579,6 +607,12 @@ export default function Home() {
                   ragResponse={ragResponse}
                   userId={userId}
                   onCashBalanceUpdate={fetchCashBalance}
+                  showTransferPanel={showTransferPanel}
+                  transferPanelAmount={transferPanelAmount}
+                  transferCompleteTrigger={transferCompleteTrigger}
+                  onShowTransferPanel={handleShowTransferPanel}
+                  onClearTransferPanel={handleClearTransferPanel}
+                  onTransferSuccess={handleTransferSuccess}
                 />
               </div>
             </main>
@@ -586,18 +620,6 @@ export default function Home() {
         </Fragment>
       )}
       {!isLoggedIn && <Login onLogin={onLogin} />}
-
-      {/* Voice bot triggered fund transfer modal */}
-      <FundTransferModal
-        open={showVoiceBotTransferModal}
-        onClose={() => setShowVoiceBotTransferModal(false)}
-        userId={userId}
-        requiredAmount={0}
-        onTransferSuccess={() => {
-          fetchCashBalance();
-          setShowVoiceBotTransferModal(false);
-        }}
-      />
     </div>
   );
 }

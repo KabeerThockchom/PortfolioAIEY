@@ -1,9 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
   Button,
   Radio,
   RadioGroup,
@@ -14,19 +10,20 @@ import {
   Box,
   Alert,
   CircularProgress,
-  Divider
+  Divider,
+  Card,
+  CardContent
 } from '@mui/material';
 import { styled } from '@mui/material/styles';
 
-const StyledDialog = styled(Dialog)(({ theme }) => ({
-  '& .MuiDialog-paper': {
-    borderRadius: '12px',
-    padding: theme.spacing(2),
-    minWidth: '500px',
-    backgroundColor: '#111827', // gray-900
-    color: '#f1f5f9', // slate-100
-    border: '1px solid #4b5563' // gray-600
-  }
+const StyledCard = styled(Card)(({ theme }) => ({
+  borderRadius: '16px',
+  backgroundColor: '#111827', // gray-900
+  color: '#f1f5f9', // slate-100
+  border: '1px solid #4b5563', // gray-600
+  boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.3)',
+  width: '100%',
+  maxWidth: '28rem' // max-w-md
 }));
 
 const BankAccountOption = styled(Box)(({ theme }) => ({
@@ -40,7 +37,7 @@ const BankAccountOption = styled(Box)(({ theme }) => ({
   }
 }));
 
-const FundTransferModal = ({ open, onClose, userId, requiredAmount, onTransferSuccess }) => {
+const FundTransferPanel = ({ userId, requiredAmount, transferCompleteTrigger, onTransferSuccess, onClear }) => {
   const [bankAccounts, setBankAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [transferAmount, setTransferAmount] = useState(requiredAmount || 0);
@@ -50,14 +47,22 @@ const FundTransferModal = ({ open, onClose, userId, requiredAmount, onTransferSu
   const [fetchingAccounts, setFetchingAccounts] = useState(false);
 
   useEffect(() => {
-    console.log('FundTransferModal useEffect - open:', open, 'userId:', userId, 'requiredAmount:', requiredAmount);
-    if (open && userId) {
+    console.log('FundTransferPanel useEffect - userId:', userId, 'requiredAmount:', requiredAmount);
+    if (userId) {
       fetchBankAccounts();
     }
     if (requiredAmount) {
       setTransferAmount(requiredAmount);
     }
-  }, [open, userId, requiredAmount]);
+  }, [userId, requiredAmount]);
+
+  // Watch for voice transfer completion to refresh bank accounts
+  useEffect(() => {
+    if (transferCompleteTrigger > 0 && userId) {
+      console.log('Voice transfer completed, refreshing bank accounts');
+      fetchBankAccounts();
+    }
+  }, [transferCompleteTrigger]);
 
   const fetchBankAccounts = async () => {
     console.log('Fetching bank accounts for userId:', userId);
@@ -125,10 +130,13 @@ const FundTransferModal = ({ open, onClose, userId, requiredAmount, onTransferSu
       const data = await response.json();
       setSuccess(`Successfully transferred $${transferAmount.toFixed(2)} to your brokerage account`);
 
-      // Call success callback but keep modal open for user to review
+      // Call success callback
       if (onTransferSuccess) {
         onTransferSuccess(data);
       }
+
+      // Refresh bank accounts to show updated balances
+      await fetchBankAccounts();
     } catch (err) {
       setError(err.message || 'Failed to transfer funds. Please try again.');
       console.error('Error transferring funds:', err);
@@ -137,51 +145,60 @@ const FundTransferModal = ({ open, onClose, userId, requiredAmount, onTransferSu
     }
   };
 
-  const handleClose = () => {
+  const handleClear = () => {
     setError('');
     setSuccess('');
     setTransferAmount(requiredAmount || 0);
-    onClose();
+    setSelectedAccountId(bankAccounts.length > 0 ? bankAccounts[0].bank_account_id : '');
+    if (onClear) {
+      onClear();
+    }
   };
 
   const selectedAccount = bankAccounts.find(acc => acc.bank_account_id === selectedAccountId);
 
   return (
-    <StyledDialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>
-        <Typography variant="h5" fontWeight="bold" sx={{ color: '#f1f5f9' }}>
-          Transfer Funds
-        </Typography>
-        <Typography variant="body2" sx={{ mt: 1, color: '#94a3b8' }}>
-          Transfer funds from your bank account to your brokerage account
-        </Typography>
-      </DialogTitle>
+    <StyledCard>
+      <CardContent sx={{ p: 3 }}>
+        {/* Header */}
+        <Box sx={{ mb: 3 }}>
+          <Typography variant="h6" fontWeight="bold" sx={{ color: '#f1f5f9', mb: 0.5 }}>
+            Transfer Funds
+          </Typography>
+          <Typography variant="body2" sx={{ color: '#94a3b8' }}>
+            Transfer funds from your bank account to your brokerage account
+          </Typography>
+        </Box>
 
-      <DialogContent>
+        {/* Required Amount Warning */}
         {requiredAmount > 0 && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             Insufficient funds. You need ${requiredAmount.toFixed(2)} more to complete this trade.
           </Alert>
         )}
 
+        {/* Error Alert */}
         {error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
             {error}
           </Alert>
         )}
 
+        {/* Success Alert */}
         {success && (
           <Alert severity="success" sx={{ mb: 2 }}>
             {success}
           </Alert>
         )}
 
+        {/* Loading State */}
         {fetchingAccounts ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
             <CircularProgress sx={{ color: '#3b82f6' }} />
           </Box>
         ) : (
           <>
+            {/* Bank Account Selection */}
             <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 2, color: '#f1f5f9' }}>
               Select Bank Account
             </Typography>
@@ -215,6 +232,7 @@ const FundTransferModal = ({ open, onClose, userId, requiredAmount, onTransferSu
               </RadioGroup>
             </FormControl>
 
+            {/* No Bank Accounts */}
             {bankAccounts.length === 0 && (
               <Alert severity="info">
                 No bank accounts found. Please contact support to add a bank account.
@@ -223,6 +241,7 @@ const FundTransferModal = ({ open, onClose, userId, requiredAmount, onTransferSu
 
             <Divider sx={{ my: 3, borderColor: '#4b5563' }} />
 
+            {/* Transfer Amount */}
             <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 2, color: '#f1f5f9' }}>
               Transfer Amount
             </Typography>
@@ -261,8 +280,9 @@ const FundTransferModal = ({ open, onClose, userId, requiredAmount, onTransferSu
               }}
             />
 
+            {/* Remaining Balance Preview */}
             {selectedAccount && (
-              <Box sx={{ p: 2, backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '8px' }}>
+              <Box sx={{ p: 2, backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '8px', mb: 3 }}>
                 <Typography variant="body2" sx={{ color: '#94a3b8' }}>
                   Remaining balance after transfer:
                 </Typography>
@@ -273,44 +293,50 @@ const FundTransferModal = ({ open, onClose, userId, requiredAmount, onTransferSu
                 </Typography>
               </Box>
             )}
+
+            {/* Action Buttons */}
+            <Box sx={{ display: 'flex', gap: 2 }}>
+              <Button
+                onClick={handleClear}
+                disabled={loading}
+                fullWidth
+                sx={{
+                  color: '#94a3b8',
+                  borderColor: '#4b5563',
+                  '&:hover': {
+                    backgroundColor: '#374151',
+                    borderColor: '#6b7280'
+                  }
+                }}
+                variant="outlined"
+              >
+                Clear
+              </Button>
+              <Button
+                onClick={handleTransfer}
+                variant="contained"
+                fullWidth
+                disabled={loading || fetchingAccounts || bankAccounts.length === 0}
+                startIcon={loading && <CircularProgress size={20} sx={{ color: '#fff' }} />}
+                sx={{
+                  backgroundColor: '#3b82f6',
+                  '&:hover': {
+                    backgroundColor: '#2563eb'
+                  },
+                  '&.Mui-disabled': {
+                    backgroundColor: '#374151',
+                    color: '#6b7280'
+                  }
+                }}
+              >
+                {loading ? 'Transferring...' : 'Transfer Funds'}
+              </Button>
+            </Box>
           </>
         )}
-      </DialogContent>
-
-      <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button
-          onClick={handleClose}
-          disabled={loading}
-          sx={{
-            color: '#94a3b8',
-            '&:hover': {
-              backgroundColor: '#374151'
-            }
-          }}
-        >
-          {success || error ? 'Close' : 'Cancel'}
-        </Button>
-        <Button
-          onClick={handleTransfer}
-          variant="contained"
-          disabled={loading || fetchingAccounts || bankAccounts.length === 0 || success || error}
-          startIcon={loading && <CircularProgress size={20} sx={{ color: '#fff' }} />}
-          sx={{
-            backgroundColor: '#3b82f6',
-            '&:hover': {
-              backgroundColor: '#2563eb'
-            },
-            '&.Mui-disabled': {
-              backgroundColor: '#374151',
-              color: '#6b7280'
-            }
-          }}
-        >
-          {loading ? 'Transferring...' : 'Transfer Funds'}
-        </Button>
-      </DialogActions>
-    </StyledDialog>
+      </CardContent>
+    </StyledCard>
   );
 };
 
-export default FundTransferModal;
+export default FundTransferPanel;

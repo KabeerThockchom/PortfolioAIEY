@@ -3008,6 +3008,7 @@ async def get_bank_accounts(params: FunctionCallParams):
     db = SessionLocal()
     try:
         user_id = params.arguments.get("user_id")
+        show_ui = params.arguments.get("show_ui", False)  # Default to verbal response
 
         bank_accounts = db.query(UserBankAccount).filter(
             UserBankAccount.user_id == user_id,
@@ -3040,18 +3041,25 @@ async def get_bank_accounts(params: FunctionCallParams):
             ]
         }
 
-        # Send UI trigger to open the fund transfer modal
-        await send_json_to_websocket(phonenumber, {
-            "type": "ui_action",
-            "query_type": "trigger_fund_transfer_modal",
-            "data": {
-                "user_id": user_id,
-                "bank_accounts": accounts_data["bank_accounts"]
-            }
-        })
+        # Check if UI should be shown or verbal response given
+        if show_ui:
+            # Send UI trigger to open the fund transfer modal
+            await send_json_to_websocket(phonenumber, {
+                "type": "ui_action",
+                "query_type": "trigger_fund_transfer_modal",
+                "data": {
+                    "user_id": user_id,
+                    "bank_accounts": accounts_data["bank_accounts"]
+                }
+            })
 
-        result_message = f"I've opened the fund transfer interface for you. You have {len(bank_accounts)} bank account(s) available. Please use the interface on your screen to complete the transfer."
-        await params.result_callback(result_message)
+            result_message = f"I've opened the fund transfer interface for you. You have {len(bank_accounts)} bank account(s) available. Please use the interface on your screen to complete the transfer."
+            await params.result_callback(result_message)
+        else:
+            # Provide verbal response with account details
+            accounts_text = "\n".join([f"- {info}" for info in accounts_info])
+            result_message = f"You have {len(bank_accounts)} bank account(s) linked:\n{accounts_text}"
+            await params.result_callback(result_message)
 
     except Exception as e:
         logger.error(f"Error retrieving bank accounts: {str(e)}")
@@ -3067,6 +3075,9 @@ async def transfer_from_bank(params: FunctionCallParams):
         bank_account_id = params.arguments.get("bank_account_id")
         bank_name = params.arguments.get("bank_name")
         amount = params.arguments.get("amount")
+
+        # Get phone number early for WebSocket notifications
+        phonenumber = db.query(User.phone_number).filter(User.user_id == user_id).scalar()
 
         if amount is None or amount <= 0:
             await params.result_callback("Please provide a valid transfer amount greater than zero.")
@@ -3162,10 +3173,20 @@ async def transfer_from_bank(params: FunctionCallParams):
 
         # Check if bank has sufficient balance
         if bank_account.available_balance < amount:
-            await params.result_callback(
+            error_message = (
                 f"Insufficient funds in your {bank_account.bank_name} account. "
                 f"Available balance is ${bank_account.available_balance:,.2f}, but you're trying to transfer ${amount:,.2f}."
             )
+
+            # Send fund transfer error event to update modal state
+            await send_json_to_websocket(phonenumber, {
+                "type": "log",
+                "query_type": "fund_transfer_complete",
+                "success": False,
+                "message": error_message
+            })
+
+            await params.result_callback(error_message)
             return
 
         # Get the cash asset
@@ -3201,8 +3222,6 @@ async def transfer_from_bank(params: FunctionCallParams):
         # Commit the transaction
         db.commit()
 
-        phonenumber = db.query(User.phone_number).filter(User.user_id == user_id).scalar()
-
         # Send updated portfolio
         result = get_portfolio_summary(user_id=user_id)
         await send_json_to_websocket(phonenumber, {
@@ -3217,12 +3236,33 @@ async def transfer_from_bank(params: FunctionCallParams):
             f"{bank_account.account_type} to your brokerage account. "
             f"Your new brokerage cash balance is ${user_cash_portfolio.investment_amount:,.2f}."
         )
+
+        # Send fund transfer completion event to update modal state
+        await send_json_to_websocket(phonenumber, {
+            "type": "log",
+            "query_type": "fund_transfer_complete",
+            "success": True,
+            "message": result_message,
+            "new_balance": float(user_cash_portfolio.investment_amount)
+        })
+
         await params.result_callback(result_message)
 
     except Exception as e:
         db.rollback()
         logger.error(f"Error transferring funds: {str(e)}")
-        await params.result_callback(f"Sorry, I encountered an error while transferring funds: {str(e)}")
+        error_message = f"Sorry, I encountered an error while transferring funds: {str(e)}"
+
+        # Send fund transfer error event to update modal state
+        if phonenumber:
+            await send_json_to_websocket(phonenumber, {
+                "type": "log",
+                "query_type": "fund_transfer_complete",
+                "success": False,
+                "message": error_message
+            })
+
+        await params.result_callback(error_message)
         raise CustomException(error_message="Failed to transfer funds", error_details=sys.exc_info())
     finally:
         db.close()

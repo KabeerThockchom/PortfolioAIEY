@@ -131,6 +131,7 @@ import { NewsCard } from "./NewsCard";
 import { FundFactSheetCard } from "./FundFactSheetCard";
 import PortfolioTradeForm from "./PortfolioTradeForm";
 import RiskAnalysisChart from "./chart/riskAnalysisChart";
+import FundTransferPanel from "./FundTransferPanel";
 
 import TradeHistoryTable from "./TradeHistoryTable";
 
@@ -147,7 +148,13 @@ const ChatLayout = ({
   ragData,
   ragResponse,
   userId,
-  onCashBalanceUpdate
+  onCashBalanceUpdate,
+  showTransferPanel,
+  transferPanelAmount,
+  transferCompleteTrigger,
+  onShowTransferPanel,
+  onClearTransferPanel,
+  onTransferSuccess
 }) => {
  
   const selectDisplayType = (chartConfig) => {
@@ -225,7 +232,16 @@ const ChatLayout = ({
   </div>
 
   <div className="flex flex-col gap-6 w-full max-w-xs flex-shrink-0 ">
-    {tradeData && <PortfolioTradeForm trade={tradeData} userId={userId} onCashBalanceUpdate={onCashBalanceUpdate} />}
+    {tradeData && <PortfolioTradeForm trade={tradeData} userId={userId} onCashBalanceUpdate={onCashBalanceUpdate} onShowTransferPanel={onShowTransferPanel} />}
+    {showTransferPanel && (
+      <FundTransferPanel
+        userId={userId}
+        requiredAmount={transferPanelAmount}
+        transferCompleteTrigger={transferCompleteTrigger}
+        onTransferSuccess={onTransferSuccess}
+        onClear={onClearTransferPanel}
+      />
+    )}
     {newsData && <NewsCard news={newsData} />}
      {fundFactSheetData && <FundFactSheetCard fund={fundFactSheetData} />}
   </div>

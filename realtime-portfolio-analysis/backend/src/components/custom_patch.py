@@ -86,10 +86,21 @@ async def patched_handle_evt_response_done(self, evt):
         self._current_assistant_response = None
         # error handling
         if evt.response.status == "failed":
-            await self.push_error(
-                ErrorFrame(error=evt.response.status_details["error"]["message"], fatal=True)
-            )
-            return
+            error_message = evt.response.status_details["error"]["message"]
+
+            # Check if this is a benign audio truncation race condition error
+            # This happens when audio finishes before the truncation command arrives
+            if "already shorter than" in error_message or "invalid_value" in str(evt.response.status_details.get("error", {})):
+                # This is a non-fatal timing issue - just log it and continue
+                logger.warning(f"Audio truncation timing issue (non-fatal): {error_message}")
+                # Don't push an error frame, just continue processing
+                # Fall through to process response content normally
+            else:
+                # This is a real error - treat as fatal
+                await self.push_error(
+                    ErrorFrame(error=error_message, fatal=True)
+                )
+                return  # Only return for real errors
         # response content
         for item in evt.response.output:
             if item.content and item.content[0].transcript:

@@ -1,11 +1,9 @@
 
-import React, { useState } from "react";
-import FundTransferModal from "./FundTransferModal";
+import React from "react";
 
-export default function PortfolioTradeForm({ trade, userId, onCashBalanceUpdate }) {
+export default function PortfolioTradeForm({ trade, userId, onCashBalanceUpdate, onShowTransferPanel }) {
   console.log(trade, "ccccccccccccc")
   const t = trade?.data || {};
-  const [showTransferModal, setShowTransferModal] = useState(false);
 
   const show = (val) => (val !== undefined && val !== null && val !== "" ? val : "—");
 
@@ -19,12 +17,10 @@ export default function PortfolioTradeForm({ trade, userId, onCashBalanceUpdate 
   console.log('PortfolioTradeForm - userId:', userId);
   console.log('PortfolioTradeForm - cashBalance:', cashBalance, 'orderAmount:', orderAmount, 'shortfall:', shortfall);
 
-  const handleTransferSuccess = (data) => {
-    // Notify parent component to refresh cash balance
-    if (onCashBalanceUpdate) {
-      onCashBalanceUpdate();
+  const handleShowTransferPanel = () => {
+    if (onShowTransferPanel) {
+      onShowTransferPanel(shortfall);
     }
-    setShowTransferModal(false);
   };
 
   return (
@@ -171,7 +167,7 @@ export default function PortfolioTradeForm({ trade, userId, onCashBalanceUpdate 
                 You need ${shortfall.toFixed(2)} more to complete this trade.
               </div>
               <button
-                onClick={() => setShowTransferModal(true)}
+                onClick={handleShowTransferPanel}
                 className="text-xs font-semibold bg-red-700 hover:bg-red-600 text-white px-3 py-1.5 rounded transition"
               >
                 Transfer Funds
@@ -180,15 +176,6 @@ export default function PortfolioTradeForm({ trade, userId, onCashBalanceUpdate 
           </div>
         </div>
       )}
-
-      {/* Fund Transfer Modal */}
-      <FundTransferModal
-        open={showTransferModal}
-        onClose={() => setShowTransferModal(false)}
-        userId={userId}
-        requiredAmount={shortfall}
-        onTransferSuccess={handleTransferSuccess}
-      />
     </div>
   );
 }
