@@ -37,7 +37,7 @@ const BankAccountOption = styled(Box)(({ theme }) => ({
   }
 }));
 
-const FundTransferPanel = ({ userId, requiredAmount, transferCompleteTrigger, onTransferSuccess, onClear }) => {
+const FundTransferPanel = ({ userId, requiredAmount, transferCompleteTrigger, lastTransferAmount, onTransferSuccess, onClear }) => {
   const [bankAccounts, setBankAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [transferAmount, setTransferAmount] = useState(requiredAmount || 0);
@@ -45,6 +45,8 @@ const FundTransferPanel = ({ userId, requiredAmount, transferCompleteTrigger, on
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [fetchingAccounts, setFetchingAccounts] = useState(false);
+  const [transferStatus, setTransferStatus] = useState('idle'); // 'idle', 'success', 'cancelled'
+  const [finalAmount, setFinalAmount] = useState(0);
 
   useEffect(() => {
     console.log('FundTransferPanel useEffect - userId:', userId, 'requiredAmount:', requiredAmount);
@@ -56,13 +58,43 @@ const FundTransferPanel = ({ userId, requiredAmount, transferCompleteTrigger, on
     }
   }, [userId, requiredAmount]);
 
-  // Watch for voice transfer completion to refresh bank accounts
+  // Watch for voice transfer completion OR cancellation
   useEffect(() => {
     if (transferCompleteTrigger > 0 && userId) {
-      console.log('Voice transfer completed, refreshing bank accounts');
+      console.log('Voice transfer trigger received');
+      console.log('Voice transfer amount:', lastTransferAmount);
+
+      // Check if it's a cancellation (amount = 0) or successful transfer
+      if (lastTransferAmount === 0) {
+        console.log('Voice transfer cancelled by user');
+        setTransferStatus('cancelled');
+        setFinalAmount(0);
+      } else {
+        console.log('Voice transfer completed successfully');
+        setTransferStatus('success');
+        setFinalAmount(lastTransferAmount || transferAmount || requiredAmount || 0);
+      }
       fetchBankAccounts();
     }
   }, [transferCompleteTrigger]);
+
+  // Auto-dismiss after 10 seconds for success or cancelled status
+  useEffect(() => {
+    if (transferStatus === 'success' || transferStatus === 'cancelled') {
+      console.log(`Transfer ${transferStatus}, will auto-dismiss in 10 seconds`);
+      const timer = setTimeout(() => {
+        console.log('Auto-dismissing transfer panel');
+        if (onClear) {
+          onClear(); // Close the panel
+        }
+      }, 10000); // 10 seconds
+
+      // Cleanup: clear timer if component unmounts or status changes
+      return () => {
+        clearTimeout(timer);
+      };
+    }
+  }, [transferStatus, onClear]);
 
   const fetchBankAccounts = async () => {
     console.log('Fetching bank accounts for userId:', userId);
@@ -103,7 +135,9 @@ const FundTransferPanel = ({ userId, requiredAmount, transferCompleteTrigger, on
 
     const selectedAccount = bankAccounts.find(acc => acc.bank_account_id === selectedAccountId);
     if (selectedAccount && transferAmount > selectedAccount.available_balance) {
-      setError(`Insufficient funds in selected account. Available: $${selectedAccount.available_balance.toFixed(2)}`);
+      // Insufficient funds - mark as cancelled
+      setTransferStatus('cancelled');
+      setFinalAmount(transferAmount);
       return;
     }
 
@@ -128,7 +162,10 @@ const FundTransferPanel = ({ userId, requiredAmount, transferCompleteTrigger, on
       }
 
       const data = await response.json();
-      setSuccess(`Successfully transferred $${transferAmount.toFixed(2)} to your brokerage account`);
+
+      // Mark as successful and save final amount
+      setTransferStatus('success');
+      setFinalAmount(transferAmount);
 
       // Call success callback
       if (onTransferSuccess) {
@@ -150,6 +187,8 @@ const FundTransferPanel = ({ userId, requiredAmount, transferCompleteTrigger, on
     setSuccess('');
     setTransferAmount(requiredAmount || 0);
     setSelectedAccountId(bankAccounts.length > 0 ? bankAccounts[0].bank_account_id : '');
+    setTransferStatus('idle');
+    setFinalAmount(0);
     if (onClear) {
       onClear();
     }
@@ -170,22 +209,66 @@ const FundTransferPanel = ({ userId, requiredAmount, transferCompleteTrigger, on
           </Typography>
         </Box>
 
-        {/* Required Amount Warning */}
-        {requiredAmount > 0 && (
+        {/* Transfer Status Message */}
+        {transferStatus === 'success' && (
+          <Box
+            sx={{
+              mb: 3,
+              p: 3,
+              backgroundColor: '#1f2937',
+              border: '2px solid #10b981',
+              borderRadius: '8px',
+              textAlign: 'center'
+            }}
+          >
+            <Typography
+              variant="h6"
+              sx={{
+                color: '#10b981',
+                fontWeight: 'bold'
+              }}
+            >
+              Transferred funds - ${finalAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </Typography>
+          </Box>
+        )}
+
+        {transferStatus === 'cancelled' && (
+          <Box
+            sx={{
+              mb: 3,
+              p: 3,
+              backgroundColor: '#1f2937',
+              border: '2px solid #ef4444',
+              borderRadius: '8px',
+              textAlign: 'center'
+            }}
+          >
+            <Typography
+              variant="h6"
+              sx={{
+                color: '#ef4444',
+                fontWeight: 'bold'
+              }}
+            >
+              Cancelled Funds transfer
+            </Typography>
+          </Box>
+        )}
+
+        {transferStatus === 'idle' && requiredAmount > 0 && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             Insufficient funds. You need ${requiredAmount.toFixed(2)} more to complete this trade.
           </Alert>
         )}
 
-        {/* Error Alert */}
-        {error && (
+        {transferStatus === 'idle' && error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
             {error}
           </Alert>
         )}
 
-        {/* Success Alert */}
-        {success && (
+        {transferStatus === 'idle' && success && (
           <Alert severity="success" sx={{ mb: 2 }}>
             {success}
           </Alert>
@@ -212,6 +295,7 @@ const FundTransferPanel = ({ userId, requiredAmount, transferCompleteTrigger, on
                   <FormControlLabel
                     key={account.bank_account_id}
                     value={account.bank_account_id}
+                    disabled={transferStatus !== 'idle'}
                     control={<Radio sx={{ color: '#94a3b8', '&.Mui-checked': { color: '#3b82f6' } }} />}
                     label={
                       <BankAccountOption>
@@ -252,6 +336,7 @@ const FundTransferPanel = ({ userId, requiredAmount, transferCompleteTrigger, on
               label="Amount"
               value={transferAmount}
               onChange={(e) => setTransferAmount(Number(e.target.value))}
+              disabled={transferStatus !== 'idle'}
               InputProps={{
                 startAdornment: <Typography sx={{ mr: 1, color: '#f1f5f9' }}>$</Typography>
               }}
@@ -316,7 +401,7 @@ const FundTransferPanel = ({ userId, requiredAmount, transferCompleteTrigger, on
                 onClick={handleTransfer}
                 variant="contained"
                 fullWidth
-                disabled={loading || fetchingAccounts || bankAccounts.length === 0}
+                disabled={loading || fetchingAccounts || bankAccounts.length === 0 || transferStatus !== 'idle'}
                 startIcon={loading && <CircularProgress size={20} sx={{ color: '#fff' }} />}
                 sx={{
                   backgroundColor: '#3b82f6',

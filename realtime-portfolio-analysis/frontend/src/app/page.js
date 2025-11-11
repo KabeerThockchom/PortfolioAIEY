@@ -50,6 +50,7 @@ export default function Home() {
   const [showTransferPanel, setShowTransferPanel] = useState(false);
   const [transferPanelAmount, setTransferPanelAmount] = useState(0);
   const [transferCompleteTrigger, setTransferCompleteTrigger] = useState(0);
+  const [lastTransferAmount, setLastTransferAmount] = useState(0);
 
   const fetchCashBalance = useCallback(async () => {
     let userId = null;
@@ -270,9 +271,18 @@ export default function Home() {
           // Panel will update its own state based on success/error
           // We just need to refresh the cash balance and trigger panel refresh
           if (dataType.success) {
+            setLastTransferAmount(dataType.amount || 0);
             fetchCashBalance();
             // Trigger FundTransferPanel to refetch bank accounts
             setTransferCompleteTrigger(prev => prev + 1);
+          }
+        } else if (dataType.query_type === "dismiss_fund_transfer_panel") {
+          console.log("User cancelled fund transfer via voice");
+          if (dataType.cancelled) {
+            // Set amount to 0 to signal cancellation, then trigger panel update
+            setLastTransferAmount(0);
+            setTransferCompleteTrigger(prev => prev + 1);
+            // Panel will show "Cancelled" message and auto-close after 10 seconds
           }
         }
       }
@@ -610,6 +620,7 @@ export default function Home() {
                   showTransferPanel={showTransferPanel}
                   transferPanelAmount={transferPanelAmount}
                   transferCompleteTrigger={transferCompleteTrigger}
+                  lastTransferAmount={lastTransferAmount}
                   onShowTransferPanel={handleShowTransferPanel}
                   onClearTransferPanel={handleClearTransferPanel}
                   onTransferSuccess={handleTransferSuccess}

@@ -680,6 +680,7 @@ async def websocket_endpoint(websocket: WebSocket):
     update_cash_balance_tool_function = schemas.update_cash_balance_tool()
     get_bank_accounts_tool_function = schemas.get_bank_accounts_tool()
     transfer_from_bank_tool_function = schemas.transfer_from_bank_tool()
+    dismiss_fund_transfer_tool_function = schemas.dismiss_fund_transfer_tool()
     get_price_trend_tool_function = schemas.get_price_trend_tool()
 
     tools = ToolsSchema(
@@ -701,6 +702,7 @@ async def websocket_endpoint(websocket: WebSocket):
                              update_cash_balance_tool_function,
                              get_bank_accounts_tool_function,
                              transfer_from_bank_tool_function,
+                             dismiss_fund_transfer_tool_function,
                              get_price_trend_tool_function],)
 
     # Configure transport
@@ -766,6 +768,7 @@ async def websocket_endpoint(websocket: WebSocket):
         llm.register_function("update_cash_balance_tool", update_cash_balance)
         llm.register_function("get_bank_accounts_tool", get_bank_accounts)
         llm.register_function("transfer_from_bank_tool", transfer_from_bank)
+        llm.register_function("dismiss_fund_transfer_tool", dismiss_fund_transfer)
         llm.register_function("get_price_trend_tool", get_price_trend)
 
         message = [{"role": "system", "content": f"""Start by introducing yourself.
@@ -2463,6 +2466,13 @@ async def place_trade(params: FunctionCallParams):
         amount = round(float(response_data["quantity"]) * (float(response_data["limit_price"]) if response_data["limit_price"] else current_price), 2)
         response_data['amount'] = amount
 
+        # Check for insufficient funds BEFORE creating the order
+        order_status = "Under Review"
+        if amount > cash_balance and response_data["action"] == "buy":
+            # Mark as Cancelled due to insufficient funds
+            order_status = "Cancelled"
+            response_data["order_status"] = "Cancelled"
+
         # Create a new order
         new_order = OrderBook(
             user_id=user_id,
@@ -2476,7 +2486,7 @@ async def place_trade(params: FunctionCallParams):
             qty=float(response_data["quantity"]),
             amount=amount,
             settlement_date=date.today(),  # You might want to adjust this based on your business logic
-            order_status="Under Review",
+            order_status=order_status,
             order_date=datetime.now(),
         )
         response_data['order_date'] = new_order.order_date.strftime("%Y-%m-%d %H:%M:%S")
@@ -2486,8 +2496,9 @@ async def place_trade(params: FunctionCallParams):
         db.add(new_order)
         db.commit()
 
-        if amount > cash_balance and response_data["action"] == "buy":
-            error_msg = f"Insufficient cash balance to place the trade. Your cash balance is {cash_balance}, but the required amount is {amount}."
+        # If order was cancelled due to insufficient funds, send error message
+        if order_status == "Cancelled":
+            error_msg = f"Insufficient cash balance to place the trade. Your cash balance is ${cash_balance:.2f}, but the required amount is ${amount:.2f}. Order has been cancelled."
             await send_json_to_websocket(phonenumber, {
                 "type": "log",
                 "type_of_data": "text",
@@ -3243,6 +3254,7 @@ async def transfer_from_bank(params: FunctionCallParams):
             "query_type": "fund_transfer_complete",
             "success": True,
             "message": result_message,
+            "amount": float(amount),
             "new_balance": float(user_cash_portfolio.investment_amount)
         })
 
@@ -3264,6 +3276,29 @@ async def transfer_from_bank(params: FunctionCallParams):
 
         await params.result_callback(error_message)
         raise CustomException(error_message="Failed to transfer funds", error_details=sys.exc_info())
+    finally:
+        db.close()
+
+async def dismiss_fund_transfer(params: FunctionCallParams):
+    """Handle dismissing/canceling the fund transfer panel"""
+    db = SessionLocal()
+    try:
+        user_id = params.arguments.get("user_id")
+        phonenumber = db.query(User.phone_number).filter(User.user_id == user_id).scalar()
+
+        logger.info(f"User {user_id} dismissed fund transfer panel")
+
+        # Send WebSocket message to close panel with cancelled status
+        await send_json_to_websocket(phonenumber, {
+            "type": "ui_action",
+            "query_type": "dismiss_fund_transfer_panel",
+            "cancelled": True
+        })
+
+        await params.result_callback("I've cancelled the fund transfer for you.")
+    except Exception as e:
+        logger.error(f"Error dismissing fund transfer: {str(e)}")
+        await params.result_callback("Sorry, I couldn't close the panel.")
     finally:
         db.close()
 

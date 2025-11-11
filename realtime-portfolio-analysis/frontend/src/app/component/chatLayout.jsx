@@ -152,6 +152,7 @@ const ChatLayout = ({
   showTransferPanel,
   transferPanelAmount,
   transferCompleteTrigger,
+  lastTransferAmount,
   onShowTransferPanel,
   onClearTransferPanel,
   onTransferSuccess
@@ -238,6 +239,7 @@ const ChatLayout = ({
         userId={userId}
         requiredAmount={transferPanelAmount}
         transferCompleteTrigger={transferCompleteTrigger}
+        lastTransferAmount={lastTransferAmount}
         onTransferSuccess={onTransferSuccess}
         onClear={onClearTransferPanel}
       />

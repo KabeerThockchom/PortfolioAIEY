@@ -533,6 +533,20 @@ class PortfolioToolSchemas:
         )
 
     @classmethod
+    def dismiss_fund_transfer_tool(cls):
+        return FunctionSchema(
+            name="dismiss_fund_transfer_tool",
+            description="Close/dismiss the fund transfer panel when user wants to cancel or no longer wishes to transfer funds. Use when user says 'cancel', 'never mind', 'I don't want to transfer', 'close that', 'forget it', etc.",
+            properties={
+                "user_id": {
+                    "type": "string",
+                    "description": "The user_id of the authenticated user",
+                },
+            },
+            required=["user_id"]
+        )
+
+    @classmethod
     def get_price_trend_tool(cls):
         return FunctionSchema(
             name="get_price_trend_tool",
